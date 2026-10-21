@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Batwara
 
-## Getting Started
+Split expenses with friends. Next.js 16 PWA + Supabase (Postgres + Google OAuth).
 
-First, run the development server:
+## Setup
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+1. Create a Supabase project. In **SQL Editor**, run `db/schema.sql`.
+2. **Authentication → Providers → Google**: enable it and paste a Google OAuth client ID/secret
+   (Google Cloud Console → Credentials → OAuth client, redirect URI = the callback URL Supabase shows).
+3. **Authentication → URL Configuration**: add `http://localhost:3000/auth/callback` and your
+   production `https://YOUR-DOMAIN/auth/callback` to Redirect URLs.
+4. `cp .env.example .env.local` and fill in the three values.
+5. `npm run dev`
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Commands
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+- `npm test`: split / balance / debt-simplification checks (`lib/money.test.ts`)
+- `npm run build`
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Databases created from an older `schema.sql`: run the files in `db/migrations/` in order, once each
+(the newest is `004_activity.sql`).
 
-## Learn More
+## Install as an app
 
-To learn more about Next.js, take a look at the following resources:
+Deployed over HTTPS, "Add to Home Screen" (iOS Safari) or "Install app" (Android/desktop Chrome) gives a
+full-screen app with its own icon. Offline, it shows a branded "you're offline" screen. The service worker
+only registers in production builds (`npm run build && npm start`), not in `npm run dev`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Features
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- Google or magic-link sign-in; invite link to join a group
+- Ghost members (name only, no account); a new joiner can claim one with "This is me"
+- Expenses: cash/card, split equally / exact / % / shares, edit, soft delete
+- Net balances, "Who Pays Whom" (≤ n−1 payments) with Settle and undo
+- Individual spending table, Card Payments donut, Save as PDF (print CSS)
+- Activity log (who added/edited/deleted/settled what), written by the server actions
+- Phones: bottom tab bar (Balances · Expenses · Add · Activity · Group). Desktop keeps the full dashboard
+- Icons are Google Material Symbols (no emoji); loaded via a font `<link>` in `app/layout.tsx`
+- Views refresh every 10s and on tab focus; offline banner
 
-## Deploy on Vercel
+## Layout
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `lib/money.ts`: all money math (integer cents)
+- `app/actions.ts`: every write; each one checks group membership
+- `db/schema.sql`: tables, RLS on with no policies (only the server touches the DB)
