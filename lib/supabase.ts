@@ -2,10 +2,12 @@ import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { connection } from "next/server";
+import { env, cookieOptions } from "./env";
 
 export async function supabase() {
   const store = await cookies();
-  return createServerClient(process.env.SUPABASE_URL!, process.env.SUPABASE_PUBLISHABLE_KEY!, {
+  return createServerClient(env("SUPABASE_URL"), env("SUPABASE_PUBLISHABLE_KEY"), {
+    cookieOptions,
     cookies: {
       getAll: () => store.getAll(),
       setAll: (list) => {
@@ -24,6 +26,13 @@ export async function requireUser(): Promise<string> {
   return data.claims.sub;
 }
 
-/** Only allow same-site relative redirects (no //evil.com). */
-export const safeNext = (n: string | null | undefined) =>
-  n && n.startsWith("/") && !n.startsWith("//") && !n.startsWith("/\\") ? n : "/";
+/**
+ * Only allow same-origin, path-only redirects. Parsed through the URL parser (not string
+ * prefixes) so `/\t/evil.com`, `/\\evil.com` and friends normalise and get rejected.
+ */
+export const safeNext = (n: string | null | undefined) => {
+  try {
+    const u = new URL(n || "/", "http://x");
+    return u.origin === "http://x" && u.pathname.startsWith("/") ? u.pathname + u.search + u.hash : "/";
+  } catch { return "/"; }
+};

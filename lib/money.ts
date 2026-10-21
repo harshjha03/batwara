@@ -6,8 +6,12 @@ export const fmt = (cents: number) =>
 /** "12.5" -> 1250. NaN if not a number. */
 export const toCents = (v: unknown) => {
   const n = Number(String(v ?? "").trim());
-  return Number.isFinite(n) ? Math.round(n * 100) : NaN;
+  const c = Number.isFinite(n) ? Math.round(n * 100) : NaN;
+  return Math.abs(c) > MAX_CENTS ? NaN : c;
 };
+/** Largest amount the integer columns can hold (int4). */
+export const MAX_CENTS = 2_147_483_647;
+export const validCents = (c: number) => Number.isInteger(c) && c > 0 && c <= MAX_CENTS;
 
 export type SplitMode = "equal" | "exact" | "percent" | "shares";
 export type SplitInput = { memberId: string; value?: number };
@@ -29,7 +33,7 @@ export function splitAmount(totalCents: number, mode: SplitMode, inputs: SplitIn
   if (weights.some((w) => w < 0)) throw new Error("Values can't be negative");
   const sum = weights.reduce((a, w) => a + w, 0);
   if (mode === "percent" && Math.abs(sum - 100) > 1e-9) throw new Error("Percentages must add up to 100");
-  if (sum <= 0) throw new Error("Shares must be greater than zero");
+  if (!Number.isFinite(sum) || sum <= 0) throw new Error("Shares must be greater than zero");
 
   const shares = inputs.map((i, k) => ({ memberId: i.memberId, cents: Math.floor((totalCents * weights[k]) / sum) }));
   // ponytail: leftover cents go to the first members in order, not by largest remainder
@@ -37,6 +41,8 @@ export function splitAmount(totalCents: number, mode: SplitMode, inputs: SplitIn
   for (let k = 0; left > 0; k = (k + 1) % shares.length) {
     if (weights[k] > 0) { shares[k].cents++; left--; }
   }
+  // Invariant: every cent is accounted for exactly once (guards any float drift).
+  if (shares.reduce((a, s) => a + s.cents, 0) !== totalCents) throw new Error("Shares must be greater than zero");
   return shares;
 }
 

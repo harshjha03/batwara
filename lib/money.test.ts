@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { splitAmount, balances, simplifyDebts, cardSummary } from "./money.ts";
+import { splitAmount, balances, simplifyDebts, cardSummary, toCents, validCents, MAX_CENTS } from "./money.ts";
 
 const sum = (xs: { cents: number }[]) => xs.reduce((a, x) => a + x.cents, 0);
 const abc = [{ memberId: "a" }, { memberId: "b" }, { memberId: "c" }];
@@ -16,6 +16,14 @@ test("percent, shares, exact", () => {
   assert.deepEqual(splitAmount(500, "shares", [{ memberId: "a", value: 0 }, { memberId: "b", value: 3 }]).map((x) => x.cents), [0, 500]);
   assert.throws(() => splitAmount(500, "exact", [{ memberId: "a", value: 100 }]));
   assert.throws(() => splitAmount(500, "percent", [{ memberId: "a", value: 90 }]));
+});
+
+test("bounds: overflowing weights and over-int4 amounts are rejected", () => {
+  assert.throws(() => splitAmount(500, "shares", [{ memberId: "a", value: Number.MAX_VALUE }, { memberId: "b", value: Number.MAX_VALUE }]));
+  assert.ok(Number.isNaN(toCents("99999999999")));
+  assert.equal(validCents(MAX_CENTS), true);
+  assert.equal(validCents(MAX_CENTS + 1), false);
+  assert.equal(validCents(0), false);
 });
 
 test("balances and simplification settle to zero", () => {

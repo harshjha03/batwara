@@ -1,10 +1,12 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
+import { env, cookieOptions } from "@/lib/env";
 
 // Refreshes the Supabase session cookie and sends signed-out users to /login.
 export async function proxy(request: NextRequest) {
   let response = NextResponse.next({ request });
-  const sb = createServerClient(process.env.SUPABASE_URL!, process.env.SUPABASE_PUBLISHABLE_KEY!, {
+  const sb = createServerClient(env("SUPABASE_URL"), env("SUPABASE_PUBLISHABLE_KEY"), {
+    cookieOptions,
     cookies: {
       getAll: () => request.cookies.getAll(),
       setAll(list, headers) {

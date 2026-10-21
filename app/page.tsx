@@ -4,10 +4,9 @@ import { sql } from "@/lib/db";
 import { requireUser } from "@/lib/supabase";
 import { createGroup, signOut } from "@/app/actions";
 
-// Per-user page: blocks on the server, nothing to prerender.
 export const instant = false;
 
-// Opens your last group (or newest); only shows a page when you have none yet.
+// Opens your most recent group; only shows this screen when you have none yet.
 export default async function Home() {
   const me = await requireUser();
   const last = (await cookies()).get("last_group")?.value;
@@ -17,19 +16,24 @@ export default async function Home() {
   if (target) redirect(`/groups/${target.id}`);
 
   return (
-    <main className="mx-auto w-full max-w-md px-4 py-4 flex flex-col gap-6">
-      <header className="flex items-center justify-between">
-        <span className="brand">Batwara</span>
-        <form action={signOut}><button className="btn-small btn-cancel">Sign out</button></form>
-      </header>
-      <section className="card mt-[6vh]">
-        <h2>Create your first group</h2>
-        <form action={createGroup} className="flex gap-2">
-          <input name="name" required maxLength={80} placeholder="Group name (e.g., Goa Trip)" aria-label="Group name" />
-          <button className="btn">Create</button>
-        </form>
-        <p className="muted text-xs mt-3">Or open an invite link someone sent you.</p>
-      </section>
-    </main>
+    <>
+      <div className="orb a" /><div className="orb b" />
+      <main className="relative mx-auto w-full flex flex-col justify-center px-[30px]" style={{ maxWidth: "var(--app)", minHeight: "100dvh", zIndex: 1 }}>
+        <div className="flex items-center justify-between mb-8">
+          <span className="brand serif font-bold" style={{ fontSize: 24 }}>Batwara</span>
+          <form action={signOut}><button className="pill">Sign out</button></form>
+        </div>
+        <h1 className="serif font-bold text-[28px] text-white mb-1.5">Create your first group</h1>
+        <p className="muted text-sm mb-6">A trip, a flat, a dinner — anything you split.</p>
+        <div className="card !rounded-[20px] !p-5">
+          <div className="eyebrow mb-2">Group name</div>
+          <form action={createGroup}>
+            <input className="inp" name="name" required maxLength={80} placeholder="e.g. Flat expenses, Weekend trip" aria-label="Group name" />
+            <button className="btn w-full mt-4">Create group</button>
+          </form>
+          <p className="faint text-xs mt-3">Or open an invite link someone sent you.</p>
+        </div>
+      </main>
+    </>
   );
 }

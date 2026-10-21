@@ -6,7 +6,7 @@ import { notFound, redirect } from "next/navigation";
 import { sql, isUuid, groupMembers } from "@/lib/db";
 import type postgres from "postgres";
 import { supabase, requireUser } from "@/lib/supabase";
-import { splitAmount, toCents, type SplitMode } from "@/lib/money";
+import { splitAmount, toCents, validCents, balances, type SplitMode, type Expense, type Split, type Settlement } from "@/lib/money";
 
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "").trim();
 
@@ -61,6 +61,33 @@ export async function joinGroup(fd: FormData) {
   redirect(`/groups/${g.id}`);
 }
 
+/** Personal invite: join the group by taking over a guest (ghost) row — its expenses and balance become yours. */
+export async function joinAs(fd: FormData) {
+  const me = await requireUser();
+  const code = str(fd, "code");
+  const memberId = str(fd, "memberId");
+  const [g] = await sql<{ id: string }[]>`select id from groups where invite_code = ${code}`;
+  if (!g || !isUuid(memberId)) notFound();
+  const back = (err: string) => redirect(`/join/${encodeURIComponent(code)}?as=${memberId}&err=${err}`);
+  try {
+    const ok = await sql.begin(async (tx) => {
+      const [ghost] = await tx<{ id: string; name: string }[]>`
+        select id, name from group_members where id = ${memberId} and group_id = ${g.id} and user_id is null for update`;
+      if (!ghost) return "used";
+      // Already in the group under a fresh row? Fold it into the ghost (FKs refuse if that row has history).
+      await tx`delete from group_members where group_id = ${g.id} and user_id = ${me}`;
+      await tx`update group_members set user_id = ${me} where id = ${ghost.id}`;
+      await logActivity(tx, g.id, me, "member_joined", { name: ghost.name });
+      return "ok";
+    });
+    if (ok !== "ok") back(ok);
+  } catch (e) {
+    if ((e as { code?: string }).code === "23503") back("history");
+    throw e;
+  }
+  redirect(`/groups/${g.id}`);
+}
+
 // ---------- people ----------
 
 export async function addPerson(_: FormState, fd: FormData): Promise<FormState> {
@@ -106,14 +133,37 @@ export async function claimMember(_: FormState, fd: FormData): Promise<FormState
   try {
     await sql.begin(async (tx) => {
       await tx`delete from group_members where id = ${m.mine.id}`; // FKs refuse if I already have history
-      await tx`update group_members set user_id = ${me} where id = ${ghost.id}`;
+      // Conditional on the ghost still being unclaimed, so two people racing for one name can't both "win".
+      const [ok] = await tx`update group_members set user_id = ${me} where id = ${ghost.id} and user_id is null returning id`;
+      if (!ok) throw Object.assign(new Error("claimed"), { code: "CLAIMED" });
     });
   } catch (e) {
-    if ((e as { code?: string }).code === "23503") return { error: "You already have expenses here, so you can't switch names." };
+    const code = (e as { code?: string }).code;
+    if (code === "23503") return { error: "You already have expenses here, so you can't switch names." };
+    if (code === "CLAIMED") return { error: "Someone else just claimed that name." };
     throw e;
   }
   revalidatePath(`/groups/${groupId}`);
   return { ok: Date.now() };
+}
+
+export async function renameGroup(fd: FormData) {
+  const me = await requireUser();
+  const groupId = str(fd, "groupId");
+  const name = str(fd, "name").slice(0, 80);
+  if (!name || !(await membership(groupId, me))) return;
+  await sql`update groups set name = ${name} where id = ${groupId}`;
+  revalidatePath(`/groups/${groupId}`);
+}
+
+/** Leaving = becoming a ghost: you lose access but your expense history stays under your name. */
+export async function leaveGroup(fd: FormData) {
+  const me = await requireUser();
+  const groupId = str(fd, "groupId");
+  const m = await membership(groupId, me);
+  if (!m) return;
+  await sql`update group_members set user_id = null where id = ${m.mine.id}`;
+  redirect("/");
 }
 
 // ---------- expenses ----------
@@ -132,7 +182,9 @@ export async function saveExpense(_: FormState, fd: FormData): Promise<FormState
   const method = str(fd, "paymentMethod") === "card" ? "card" : "cash";
   const mode = str(fd, "mode") as SplitMode;
   if (!description) return { error: "Enter a description." };
-  if (!(amountCents > 0)) return { error: "Enter a valid amount." };
+  if (!validCents(amountCents)) return { error: "Enter a valid amount." };
+  const clientId = str(fd, "clientId"); // idempotency key for new expenses (a retried submit can't double-insert)
+  if (clientId && !isUuid(clientId)) return { error: "Enter a valid amount." };
   if (!m.ids.has(paidBy)) return { error: "Pick who paid." };
   if (!["equal", "exact", "percent", "shares"].includes(mode)) return { error: "Pick a split type." };
 
@@ -161,13 +213,19 @@ export async function saveExpense(_: FormState, fd: FormData): Promise<FormState
     });
     if (!updated) return { error: "That expense was deleted." };
     revalidatePath(`/groups/${groupId}`);
-    redirect(`/groups/${groupId}`); // leave edit mode
+    return { ok: Date.now() };
   }
 
   await sql.begin(async (tx) => {
-    const [e] = await tx<{ id: string }[]>`
-      insert into expenses (group_id, description, amount_cents, paid_by, payment_method, created_by)
-      values (${groupId}, ${description}, ${amountCents}, ${paidBy}, ${method}, ${me}) returning id`;
+    const [e] = clientId
+      ? await tx<{ id: string }[]>`
+          insert into expenses (id, group_id, description, amount_cents, paid_by, payment_method, created_by)
+          values (${clientId}, ${groupId}, ${description}, ${amountCents}, ${paidBy}, ${method}, ${me})
+          on conflict (id) do nothing returning id`
+      : await tx<{ id: string }[]>`
+          insert into expenses (group_id, description, amount_cents, paid_by, payment_method, created_by)
+          values (${groupId}, ${description}, ${amountCents}, ${paidBy}, ${method}, ${me}) returning id`;
+    if (!e) return; // already saved by an earlier attempt
     await tx`insert into expense_splits ${tx(rows(e.id))}`;
     await logActivity(tx, groupId, me, "expense_added", { description, amountCents });
   });
@@ -192,20 +250,31 @@ export async function deleteExpense(fd: FormData) {
 
 // ---------- settlements ----------
 
-export async function settleUp(fd: FormData) {
+export async function settleUp(fd: FormData): Promise<FormState> {
   const me = await requireUser();
   const groupId = str(fd, "groupId");
   const from = str(fd, "from");
   const to = str(fd, "to");
   const cents = Number(str(fd, "cents"));
   const m = await membership(groupId, me);
-  if (!m || !m.ids.has(from) || !m.ids.has(to) || from === to || !Number.isInteger(cents) || cents <= 0) return;
-  await sql.begin(async (tx) => {
+  if (!m || !m.ids.has(from) || !m.ids.has(to) || from === to || !validCents(cents)) return { error: "Couldn't record that payment." };
+  const stale = await sql.begin(async (tx) => {
+    // Re-derive the live balance inside the transaction: a double tap, a stale screen or two phones
+    // settling the same debt must not record a second payment and flip who owes whom.
+    const [expenses, splits, settlements] = await Promise.all([
+      tx<Expense[]>`select id, paid_by, amount_cents from expenses where group_id = ${groupId} and deleted_at is null`,
+      tx<Split[]>`select s.expense_id, s.member_id, s.share_cents from expense_splits s join expenses e on e.id = s.expense_id where e.group_id = ${groupId} and e.deleted_at is null`,
+      tx<Settlement[]>`select from_member, to_member, amount_cents from settlements where group_id = ${groupId} for update`,
+    ]);
+    const net = balances(expenses, splits, settlements);
+    if (cents > -(net.get(from) ?? 0) || cents > (net.get(to) ?? 0)) return true;
     await tx`insert into settlements (group_id, from_member, to_member, amount_cents, created_by)
       values (${groupId}, ${from}, ${to}, ${cents}, ${me})`;
     await logActivity(tx, groupId, me, "settlement_recorded", { fromName: m.name(from), toName: m.name(to), amountCents: cents });
+    return false;
   });
   revalidatePath(`/groups/${groupId}`);
+  return stale ? { error: "That balance already changed. Refreshed — check again." } : { ok: Date.now() };
 }
 
 export async function undoSettlement(fd: FormData) {
